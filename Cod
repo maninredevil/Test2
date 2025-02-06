@@ -1,0 +1,57 @@
+@RestController
+@RequestMapping("/kdcproxy")
+@RequiredArgsConstructor
+public class KdcProxyController {
+
+    private static final String KDC_HOST = "idm.example.com";
+    private static final int KDC_PORT = 88;
+
+    @PostMapping(consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE, produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> forwardToKdc(@RequestBody byte[] requestData) {
+        try {
+            byte[] responseData = sendToKdcWithProxyFormat(requestData);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(responseData);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
+    }
+
+    private byte[] sendToKdcWithProxyFormat(byte[] requestData) throws IOException {
+        try (Socket socket = new Socket(KDC_HOST, KDC_PORT);
+             OutputStream outputStream = socket.getOutputStream();
+             InputStream inputStream = socket.getInputStream()) {
+
+            // Оборачиваем в KDC Proxy формат (RFC 8070)
+            ByteArrayOutputStream wrappedRequest = new ByteArrayOutputStream();
+            wrappedRequest.write(0x00); // Версия
+            wrappedRequest.write(0x00);
+            wrappedRequest.write((requestData.length >> 8) & 0xFF); // Длина запроса (2 байта)
+            wrappedRequest.write(requestData.length & 0xFF);
+            wrappedRequest.write(requestData);
+
+            // Отправляем в KDC
+            outputStream.write(wrappedRequest.toByteArray());
+            outputStream.flush();
+
+            // Получаем ответ
+            ByteArrayOutputStream responseBuffer = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                responseBuffer.write(buffer, 0, bytesRead);
+            }
+
+            byte[] responseData = responseBuffer.toByteArray();
+
+            // Проверяем, что ответ соответствует KDC Proxy (убираем заголовок)
+            if (responseData.length >= 4) {
+                int length = ((responseData[2] & 0xFF) << 8) | (responseData[3] & 0xFF);
+                return Arrays.copyOfRange(responseData, 4, 4 + length);
+            } else {
+                throw new IOException("Invalid KDC response format");
+            }
+        }
+    }
+}
