@@ -69,3 +69,85 @@ public class KdcProxyController {
         }
     }
 }
+
+
+
+package com.example.kdcproxy;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import java.io.*;
+import java.net.*;
+import java.util.Arrays;
+
+@RestController
+@RequestMapping("/kdcproxy")
+public class KdcProxyController {
+
+    private static final String KDC_HOST = "idm.example.com"; // Укажите хост KDC сервера
+    private static final int KDC_PORT = 88; // Порт KDC
+
+    // Метод для получения запроса от клиента и пересылки его на KDC
+    @PostMapping(consumes = "application/kerberos", produces = "application/kerberos")
+    public ResponseEntity<byte[]> forwardToKdc(@RequestBody byte[] requestData) {
+        try {
+            // Логирование полученных данных от клиента
+            System.out.println("Received request: " + Arrays.toString(requestData));
+
+            if (requestData.length == 0) {
+                return ResponseEntity.badRequest().build();  // Если данные пустые — ошибка 400
+            }
+
+            byte[] wrappedRequest = wrapRequest(requestData);  // Оборачиваем запрос в нужный формат
+            byte[] responseData = sendToKdc(wrappedRequest);   // Отправляем запрос на KDC и получаем ответ
+
+            // Возвращаем ответ от KDC клиенту
+            return ResponseEntity.ok()
+                    .contentType(MediaType.valueOf("application/kerberos"))
+                    .body(responseData);  // Отправляем ответ клиенту
+        } catch (IOException e) {
+            // Логирование ошибки и возврат ошибки 502, если не удается обработать запрос
+            System.err.println("Error while processing the request: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();  // Ошибка 502
+        }
+    }
+
+    // Метод для оборачивания запроса в KDC Proxy Format
+    private byte[] wrapRequest(byte[] requestData) throws IOException {
+        ByteArrayOutputStream wrappedRequest = new ByteArrayOutputStream();
+        wrappedRequest.write(0x00);  // Версия (0)
+        wrappedRequest.write(0x00);  // Зарезервировано (0)
+        wrappedRequest.write((requestData.length >> 8) & 0xFF);  // Длина запроса (старший байт)
+        wrappedRequest.write(requestData.length & 0xFF);  // Длина запроса (младший байт)
+        wrappedRequest.write(requestData);  // Сами данные запроса
+        return wrappedRequest.toByteArray();  // Возвращаем обернутый запрос
+    }
+
+    // Метод для отправки запроса на KDC и получения ответа
+    private byte[] sendToKdc(byte[] requestData) throws IOException {
+        try (Socket socket = new Socket(KDC_HOST, KDC_PORT);  // Устанавливаем TCP соединение с KDC
+             OutputStream outputStream = socket.getOutputStream();
+             InputStream inputStream = socket.getInputStream()) {
+
+            // Логирование отправляемых данных
+            System.out.println("Sending request to KDC: " + Arrays.toString(requestData));
+
+            outputStream.write(requestData);  // Отправляем данные на KDC
+            outputStream.flush();
+
+            // Чтение ответа от KDC
+            byte[] responseBuffer = new byte[4096];
+            int bytesRead = inputStream.read(responseBuffer);
+            if (bytesRead == -1) {
+                throw new IOException("Empty response from KDC");  // Если нет ответа от KDC, ошибка
+            }
+
+            // Логирование полученного ответа
+            System.out.println("Received response from KDC: " + Arrays.toString(Arrays.copyOf(responseBuffer, bytesRead)));
+
+            return Arrays.copyOf(responseBuffer, bytesRead);  // Возвращаем полученный ответ
+        }
+    }
+}
